@@ -15,12 +15,10 @@
 #include <sys/types.h>
 
 #include "network.h"
-#include "RCB.c"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 
 struct RCB{
-  public :
   int sequenceNumber;
   int fileDescriptor;
   char *fileName;
@@ -38,7 +36,7 @@ int nextSequenceNumber = 0;
  *             fd : the file descriptor to the client connection
  * Returns: None
  */
-static RCB create_rcb( int fd ) {
+static struct RCB create_rcb( int fd ) {
   static char *buffer;                              /* request buffer */
   char *req = NULL;                                 /* ptr to req file */
   char *brk;                                        /* state used by strtok */
@@ -83,16 +81,16 @@ static RCB create_rcb( int fd ) {
   
   struct RCB newRCB; 
 
-  newRCB->sequenceNumber = nextSequenceNumber++;
-  newRCB->fileDescriptor = fd;
-  newRCB->fileName = req;
-  newRCB->bytesRemaining = fileStat.st_size();
-  newRCB->byteQuantum = 8;
+  newRCB.sequenceNumber = nextSequenceNumber++;
+  newRCB.fileDescriptor = fd;
+  newRCB.fileName = req;
+  newRCB.bytesRemaining = fileStat.st_size;
+  newRCB.byteQuantum = 8;
   return newRCB;
 }  
  
  
- static void serve_client( RCB rcb ) {
+ static void serve_client( struct RCB rcb ) {
 
   int fd;
   static char *buffer;                              /* request buffer */
@@ -100,8 +98,8 @@ static RCB create_rcb( int fd ) {
   FILE *fin;                                        /* input file handle */
   int len;
 	
-  req = rcb->fileName;
-  fd = rcb->fileDescriptor;
+  req = rcb.fileName;
+  fd = rcb.fileDescriptor;
   
   if( !buffer ) {                                   /* 1st time, alloc buffer */
     buffer = malloc( MAX_HTTP_SIZE );
@@ -156,10 +154,8 @@ static RCB create_rcb( int fd ) {
  */
 int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
-  char[5] scheduler;
-  int schedulerToUse = -1;
-  
-  char[4] = 
+  char scheduler[5];
+  int schedulerToUse = -1; 
   
   int fd;                                           /* client file descriptor */
   
@@ -193,7 +189,7 @@ int main( int argc, char **argv ) {
 	  schedulerToUse = 2;
   }
   else{
-	  printf( "Invalid scheduler name." );
+	  printf( "Invalid scheduler name.\n" );
 	  return 0;
   }
   
