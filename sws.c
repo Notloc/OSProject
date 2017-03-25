@@ -19,6 +19,15 @@
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 
+struct RCB{
+  public :
+  int sequenceNumber;
+  int fileDescriptor;
+  char *fileName;
+  int bytesRemaining;
+  int byteQuantum;
+};
+
 int nextSequenceNumber = 0;
 
 /* This function takes a file handle to a client, reads in the request, 
@@ -72,7 +81,7 @@ static RCB create_rcb( int fd ) {
 	fclose( fin );
   }
   
-  RCB newRCB; 
+  struct RCB newRCB; 
 
   newRCB->sequenceNumber = nextSequenceNumber++;
   newRCB->fileDescriptor = fd;
