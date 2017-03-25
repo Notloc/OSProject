@@ -11,11 +11,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "network.h"
+#include "RCB.c"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 
+int nextSequenceNumber = 0;
 
 /* This function takes a file handle to a client, reads in the request, 
  *    parses the request, and sends back the requested file.  If the
@@ -25,7 +29,7 @@
  *             fd : the file descriptor to the client connection
  * Returns: None
  */
-static void serve_client( int fd ) {
+static RCB create_rcb( int fd ) {
   static char *buffer;                              /* request buffer */
   char *req = NULL;                                 /* ptr to req file */
   char *brk;                                        /* state used by strtok */
@@ -55,7 +59,51 @@ static void serve_client( int fd ) {
   if( tmp && !strcmp( "GET", tmp ) ) {
     req = strtok_r( NULL, " ", &brk );
   }
+
+  struct stat fileStat;
+  
+  if( !req ) {                                      /* is req valid? */
+    len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
+    write( fd, buffer, len );                       /* if not, send err */
+  } else {                                          /* if so, open file */
+    req++;                                          /* skip leading / */
+    fin = fopen( req, "r" );
+	fstat(fin, &fileStat);
+	fclose( fin );
+  }
+  
+  RCB newRCB; 
+
+  newRCB->sequenceNumber = nextSequenceNumber++;
+  newRCB->fileDescriptor = fd;
+  newRCB->fileName = req;
+  newRCB->bytesRemaining = fileStat.st_size();
+  newRCB->byteQuantum = 8;
+  return newRCB;
+}  
  
+ 
+ static void serve_client( RCB rcb ) {
+
+  int fd;
+  static char *buffer;                              /* request buffer */
+  char *req = NULL;                                 /* ptr to req file */
+  FILE *fin;                                        /* input file handle */
+  int len;
+	
+  req = rcb->fileName;
+  fd = rcb->fileDescriptor;
+  
+  if( !buffer ) {                                   /* 1st time, alloc buffer */
+    buffer = malloc( MAX_HTTP_SIZE );
+    if( !buffer ) {                                 /* error check */
+      perror( "Error while allocating memory" );
+      abort();
+    }
+  }
+  memset( buffer, 0, MAX_HTTP_SIZE );
+	
+	
   if( !req ) {                                      /* is req valid? */
     len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
     write( fd, buffer, len );                       /* if not, send err */
@@ -148,7 +196,7 @@ int main( int argc, char **argv ) {
     network_wait();                                 /* wait for clients */
 
     for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
-      //AddToQueue(fd);                           /* process each client */
+      serve_client(create_rcb( fd ));                           /* process each client */
     }
 	
 	/*
