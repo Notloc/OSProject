@@ -132,7 +132,7 @@ static struct RCB create_rcb( int fd ) {
   newRCB.fileName = malloc(sizeof(char) * (strlen(req) + 1));
   strcpy(newRCB.fileName, req);
   newRCB.bytesRemaining = fileStat.st_size;
-  newRCB.byteQuantum = 8;
+  newRCB.byteQuantum = 8192;
   return newRCB;
 }
 
