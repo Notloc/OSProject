@@ -129,7 +129,8 @@ static struct RCB create_rcb( int fd ) {
 
   newRCB.sequenceNumber = nextSequenceNumber++;
   newRCB.fileDescriptor = fd;
-  newRCB.fileName = req;
+  newRCB.fileName = malloc(sizeof(char) * (strlen(req) + 1));
+  strcpy(newRCB.fileName, req);
   newRCB.bytesRemaining = fileStat.st_size;
   newRCB.byteQuantum = 8;
   return newRCB;
