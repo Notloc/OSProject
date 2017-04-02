@@ -13,14 +13,19 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <pthread.h>
 
 #include "network.h"
 #include "rcbQueue.c"
+#include "fdQueue.c"
 
 #define MAX_HTTP_SIZE 65536
 
 int nextSequenceNumber = 0;
+pthread_mutex_t schedulerLock;
+pthread_mutex_t fdLock;
 
+struct fdQueue fdQ;			//Queue of new file descriptors
 
 struct Queue top;			//3 queues
 struct Queue middle;			//Use depends on chosen scheduler
@@ -35,24 +40,23 @@ struct Queue bottom;			//MLFB uses all 3, RR and SJF only use top
  * Returns: None
  */
 static struct RCB create_rcb( int fd ) {
-  static char *buffer;                              /* request buffer */
+  char *buffer;                              /* request buffer */
   char *req = NULL;                                 /* ptr to req file */
   char *brk;                                        /* state used by strtok */
   char *tmp;                                        /* error checking ptr */
   FILE *fin;                                        /* input file handle */
   int len;                                          /* length of data read */
 
-  if( !buffer ) {                                   /* 1st time, alloc buffer */
-    buffer = malloc( MAX_HTTP_SIZE );
-    if( !buffer ) {                                 /* error check */
-      perror( "Error while allocating memory" );
-      abort();
-    }
+  buffer = malloc( MAX_HTTP_SIZE );
+  if( !buffer ) {                                 /* error check */
+    perror( "Error while allocating memory" );
+    abort();
   }
 
   memset( buffer, 0, MAX_HTTP_SIZE );
   if( read( fd, buffer, MAX_HTTP_SIZE ) <= 0 ) {    /* read req from client */
     perror( "Error while reading request" );
+    free(buffer);
     abort();
   }
 
@@ -82,6 +86,8 @@ static struct RCB create_rcb( int fd ) {
     fclose( fin );
   }
 
+  free(buffer);
+
   newRCB.sequenceNumber = nextSequenceNumber++;
   newRCB.fileDescriptor = fd;
   newRCB.fileName = malloc(sizeof(char) * (strlen(req) + 1));
@@ -94,7 +100,7 @@ static struct RCB create_rcb( int fd ) {
  static void serve_client( struct RCB *rcb ) {
 
   int fd;
-  static char *buffer;                              /* request buffer */
+  char *buffer;                              /* request buffer */
   char *req = NULL;                                 /* ptr to req file */
   FILE *fin;                                        /* input file handle */
   int len;
@@ -105,12 +111,10 @@ static struct RCB create_rcb( int fd ) {
   req = rcb->fileName;
   fd = rcb->fileDescriptor;
 
-  if( !buffer ) {                                   /* 1st time, alloc buffer */
-    buffer = malloc( MAX_HTTP_SIZE );
-    if( !buffer ) {                                 /* error check */
-      perror( "Error while allocating memory" );
-      abort();
-    }
+  buffer = malloc( MAX_HTTP_SIZE );
+  if( !buffer ) {                                 /* error check */
+    perror( "Error while allocating memory" );
+    abort();
   }
   memset( buffer, 0, MAX_HTTP_SIZE );
 
@@ -148,16 +152,51 @@ static struct RCB create_rcb( int fd ) {
             perror( "Error while writing to client" );
           }
 	  rcb->bytesRemaining -= len;
+          printf("Sent %d bytes of file <%s>.\n", len, rcb->fileName);
+          fflush(stdout);
         }
 
       fclose( fin );
     }
   }
 
+  free(buffer);
+
   if(rcb->bytesRemaining < 1){
     close ( fd );
+    printf("Request for file <%s> completed.\n", rcb->fileName);
+    printf("Request <%d> completed\n", rcb->sequenceNumber);
+    fflush(stdout);
   }                                  /* close client connectuin*/
 }
+
+//The function that threads run
+void doWork(){
+  //while(1){}
+
+  while(1){
+    if(fdQ.front != NULL){
+      pthread_mutex_lock(&fdLock);
+      int fd = fdDequeue(&fdQ);
+      pthread_mutex_unlock(&fdLock);
+
+      if(fd > 0){
+        struct RCB tempRCB = create_rcb(fd);
+
+        pthread_mutex_lock(&schedulerLock);
+        schedulerEnqueue(tempRCB);
+        printf("Request for file <%s> admitted.\n", tempRCB.fileName);
+        fflush(stdout);
+        pthread_mutex_unlock(&schedulerLock);
+      }
+    }
+
+    if(isSchedulerEmpty() != 1){
+      schedulerDequeue();
+    }
+  }
+}
+
 
 
 /* This function is where the program starts running.
@@ -174,6 +213,7 @@ static struct RCB create_rcb( int fd ) {
 int schedulerToUse = -1;
 int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
+  int numberOfThreads = 0;
   char scheduler[5];
 
   int fd;                                           /* client file descriptor */
@@ -183,15 +223,15 @@ int main( int argc, char **argv ) {
    */
 
    //Port
-  if( argc < 3){
-	printf( "usage: sms <port> <Scheduler>\n" );
+  if( argc < 4){
+	printf( "usage: sms <port> <Scheduler> <NumberOfThreads>\n" );
     return 0;
   }
 
   //Scheduler
   if(( sscanf( argv[1], "%d", &port ) < 1 ) ) {
 	printf( "Invalid port number." );
-    printf( "usage: sms <port> <Scheduler>\n" );
+    printf( "usage: sms <port> <Scheduler> <NumberOfThreads>\n" );
 	return 0;
   }
 
@@ -212,21 +252,41 @@ int main( int argc, char **argv ) {
 	  return 0;
   }
 
+  //Number of threads
+  if(( sscanf( argv[3], "%d", &numberOfThreads ) < 1 ) ) {
+    printf( "usage: sms <port> <Scheduler> <NumberOfThreads>\n" );
+    return 0;
+  }
+  if(numberOfThreads < 1){
+      printf( "Invalid number of threads." );
+      printf( "usage: sms <port> <Scheduler> <PositiveNumberOfThreads>\n" ); 
+     return 0;
+  }
+
+
   network_init( port );                             /* init network module */
 
-  //initialize queue ( schedulerToUse );
+  pthread_t workers[numberOfThreads];
+
+  int i = 0;
+  while(i < numberOfThreads){
+    pthread_create(&workers[i], NULL, doWork, NULL);
+    i++;
+  }
 
   for( ;; ) {                                       /* main loop */
     network_wait();                                 /* wait for clients */
 
     for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
-      schedulerEnqueue(create_rcb(fd));
+      
+      pthread_mutex_lock(&fdLock);
+      fdEnqueue(&fdQ, fd);
+      pthread_mutex_unlock(&fdLock);
+
+      //schedulerEnqueue(create_rcb(fd));
       //printf("%d\n", create_rcb(fd).bytesRemaining);
     }
-
-    //printf("\n");
-
-    while (schedulerDequeue() != 0){}
+    //while (schedulerDequeue() != 0){}
   }
 }
 
@@ -254,77 +314,112 @@ int schedulerDequeue(){
   }
   else if(schedulerToUse == 0){
     //SJF();
+    pthread_mutex_lock(&schedulerLock);
     if(top.front == NULL){
+      pthread_mutex_unlock(&schedulerLock);
       return 0;
     }
-
     struct RCB temp;
     temp = Dequeue(&top);
+    pthread_mutex_unlock(&schedulerLock);
 
     serve_client(&temp);
-
-    printf("Served %s.\n", temp.fileName);
+    return 1;
   }
   else if(schedulerToUse == 1){
     //RR
+    pthread_mutex_lock(&schedulerLock);
     if(top.front == NULL){
+      pthread_mutex_unlock(&schedulerLock);      
       return 0;
     }
-    
     struct RCB temp;
     temp = Dequeue(&top);
+    pthread_mutex_unlock(&schedulerLock);
 
     serve_client(&temp);
 
-    if(temp.bytesRemaining > 0){
-      printf("We sent a chunk from %s\n", temp.fileName);
+    if(temp.bytesRemaining > 0){      
+      pthread_mutex_lock(&schedulerLock);
       schedulerEnqueue(temp);
+      pthread_mutex_unlock(&schedulerLock);
     }
 
     return 1;
   }
   else if(schedulerToUse == 2){
     //MLFB();
+    pthread_mutex_lock(&schedulerLock);
     if(top.front != NULL){
       struct RCB tempRCB;
       tempRCB = Dequeue(&top);
+      pthread_mutex_unlock(&schedulerLock);      
+
       serve_client(&tempRCB);
 
       if(tempRCB.bytesRemaining > 0){
-        printf("Served %s in top queue.\n", tempRCB.fileName);
         tempRCB.byteQuantum = (1024*2);
+        pthread_mutex_lock(&schedulerLock);      
         Enqueue(&middle, tempRCB);
+        pthread_mutex_unlock(&schedulerLock);      
+
       }
       return 1;
     }
     else if(middle.front != NULL){
       struct RCB tempRCB;
       tempRCB = Dequeue(&middle);
+      pthread_mutex_unlock(&schedulerLock);      
+
       serve_client(&tempRCB);
 
-      printf("Hello World\n");
-
       if(tempRCB.bytesRemaining > 0){
-        printf("Served %s in middle queue.\n", tempRCB.fileName);
+        pthread_mutex_lock(&schedulerLock);      
         Enqueue(&bottom, tempRCB);
+        pthread_mutex_unlock(&schedulerLock);      
       }
       return 1;
     }
     else if(bottom.front != NULL){
-      printf("Started from the top, now we're here.\n");
       struct RCB tempRCB;
       tempRCB = Dequeue(&bottom);
+      pthread_mutex_unlock(&schedulerLock);      
+
       serve_client(&tempRCB);
 
       if(tempRCB.bytesRemaining > 0){
-        printf("Served %s in bottom queue.\n", tempRCB.fileName);
+        pthread_mutex_lock(&schedulerLock);      
         Enqueue(&bottom, tempRCB);
+        pthread_mutex_unlock(&schedulerLock);      
       }
+      return 1;
+    }
+    else{
+      pthread_mutex_unlock(&schedulerLock);      
+      return 0;
+    }
+
+  }
+ 
+}
+
+//Returns 1 if scheduler is empty
+int isSchedulerEmpty(void){
+  if(schedulerToUse == 0 || schedulerToUse == 1){
+    if(top.front == NULL){
       return 1;
     }
     else{
       return 0;
     }
-
+  }
+  else{
+    if(top.front == NULL && middle.front == NULL && bottom.front == NULL){
+      return 1;
+    }
+    else{
+      return 0;
+    }
   }
 }
+
