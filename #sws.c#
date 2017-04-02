@@ -15,11 +15,10 @@
 #include <sys/types.h>
 
 #include "network.h"
-#include "rcbQueue.c"
+#include "scheduler.h"
 
-#define MAX_HTTP_SIZE 8192
+#define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 
-/*
 struct RCB{
   int sequenceNumber;
   int fileDescriptor;
@@ -27,6 +26,8 @@ struct RCB{
   int bytesRemaining;
   int byteQuantum;
 };
+
+int count = 0;
 
 struct Node {
 	struct RCB data;
@@ -48,6 +49,7 @@ void Enqueue(struct RCB x) {
 	}
 	rear->next = temp;
 	rear = temp;
+	count++;
 }
 
 // To Dequeue an integer.
@@ -64,6 +66,7 @@ void Dequeue() {
 		front = front->next;
 	}
 	free(temp);
+	count--;
 }
 
 struct RCB Front() {
@@ -73,14 +76,9 @@ struct RCB Front() {
 	}
 	return front->data;
 }
-*/
 
 int nextSequenceNumber = 0;
-
-
-struct Queue top;			//3 queues
-struct Queue middle;			//Use depends on chosen scheduler
-struct Queue bottom;			//MLFB uses all 3, RR and SJF only use top
+int schedulerToUse = -1; 
 
 /* This function takes a file handle to a client, reads in the request,
  *    parses the request, and sends back the requested file.  If the
@@ -121,9 +119,7 @@ static struct RCB create_rcb( int fd ) {
     req = strtok_r( NULL, " ", &brk );
   }
 
-  //struct stat fileStat;
-  struct RCB newRCB;
-
+  struct stat fileStat;
 
   if( !req ) {                                      /* is req valid? */
     len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
@@ -131,26 +127,22 @@ static struct RCB create_rcb( int fd ) {
   } else {                                          /* if so, open file */
     req++;                                          /* skip leading / */
     fin = fopen( req, "r" );
-    //stat(fin, &fileStat);
-    fseek(fin, 0, SEEK_END);
-
-    newRCB.bytesRemaining = ftell(fin);    
-
-    printf("FILETELL: %d\nRCB: %d\n", ftell(fin), newRCB.bytesRemaining);
-
-    fclose( fin );
+	   fstat(fin, &fileStat);
+	fclose( fin );
   }
+
+  struct RCB newRCB;
 
   newRCB.sequenceNumber = nextSequenceNumber++;
   newRCB.fileDescriptor = fd;
-  newRCB.fileName = malloc(sizeof(char) * (strlen(req) + 1));
-  strcpy(newRCB.fileName, req);
-  newRCB.byteQuantum = 8192/8;
+  newRCB.fileName = req;
+  newRCB.bytesRemaining = fileStat.st_size;
+  newRCB.byteQuantum = 8192;
   return newRCB;
 }
 
 
- static void serve_client( struct RCB *rcb ) {
+static void serve_client( struct RCB rcb ) {
 
   int fd;
   static char *buffer;                              /* request buffer */
@@ -158,64 +150,72 @@ static struct RCB create_rcb( int fd ) {
   FILE *fin;                                        /* input file handle */
   int len;
 
-  int byteQuantum = rcb->byteQuantum;
-
   // strcpy(req, rcb.fileName);
-  req = rcb->fileName;
-  fd = rcb->fileDescriptor;
+  req = rcb.fileName;
+  fd = rcb.fileDescriptor;
+
+  printf("%s\n", req);
 
   if( !buffer ) {                                   /* 1st time, alloc buffer */
-    buffer = malloc( byteQuantum );
+    buffer = malloc( rcb.byteQuantum );
     if( !buffer ) {                                 /* error check */
       perror( "Error while allocating memory" );
       abort();
     }
   }
-  memset( buffer, 0, byteQuantum );
+  memset( buffer, 0, rcb.byteQuantum );
+
+  struct stat fileStat;
 
   if( !req ) {                                      /* is req valid? */
     len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
     write( fd, buffer, len );                       /* if not, send err */
   } else {                                          /* if so, open file */
-    fin = fopen( req, "rb" );                        /* open file */
+    fin = fopen( req, "r" );                        /* open file */
     if( !fin ) {                                    /* check if successful */
       len = sprintf( buffer, "HTTP/1.1 404 File not found\n\n" );
       write( fd, buffer, len );                     /* if not, send err */
     } else {                                        /* if so, send file */
-      
-      //Get file size
-      fseek(fin, 0, SEEK_END);
-      int sizeOfFile = ftell(fin);
-
-      //Reset our position in the file to beginning      
-      fseek(fin, 0, SEEK_SET);
-      
-      if(rcb->bytesRemaining==sizeOfFile){
-        len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
+     
+      //Send success code if this is the first time sending to the client
+      fstat(fin, &fileStat);
+      if(rcb.bytesRemaining==fileStat.st_size){
+	len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
         write( fd, buffer, len );
       }
       else{
-        fseek(fin, sizeOfFile - rcb->bytesRemaining, SEEK_SET);
-      }	
+ 	//If this isn't the first time, skip to appropriate point in file
 
-        len = fread( buffer, 1, byteQuantum, fin );  /* read file chunk */
-        if( len < 0 ) {                             /* check for errors */
-            perror( "Error while writing to client" );
-        } else if( len > 0 ) {                      /* if none, send chunk */
-          len = write( fd, buffer, len );
-          if( len < 1 ) {                           /* check for errors */
-            perror( "Error while writing to client" );
-          }
-	  rcb->bytesRemaining -= len;
+	int bytesToSkip = fileStat.st_size - rcb.bytesRemaining;
+	while(bytesToSkip > 0){
+	  if(bytesToSkip < rcb.byteQuantum){
+	    len = fread( buffer, 1, bytesToSkip, fin );
+	  } else {
+	    len = fread( buffer, 1, rcb.byteQuantum, fin );
+	  }
+	  bytesToSkip -= rcb.byteQuantum;
+	}
+      }
+
+      len = fread( buffer, 1, rcb.byteQuantum, fin );  /* read file chunk */
+      if( len < 0 ) {                             /* check for errors */
+          perror( "Error while writing to client 1" );
+      } else if( len > 0 ) {                      /* if none, send chunk */
+        len = write( fd, buffer, len );
+        if( len < 1 ) {                           /* check for errors */
+          perror( "Error while writing to client 2" );
         }
-
+	else{
+	  rcb.bytesRemaining -= len;
+	}
+      }
       fclose( fin );
     }
   }
 
-  if(rcb->bytesRemaining < 1){
-    close ( fd );
-  }                                  /* close client connectuin*/
+  if(rcb.bytesRemaining < 1){
+    close( fd );
+  }                                     /* close client connection*/
 }
 
 
@@ -229,8 +229,6 @@ static struct RCB create_rcb( int fd ) {
  *             argv : array of pointers to command line parameters
  * Returns: an integer status code, 0 for success, something else for error.
  */
-
-int schedulerToUse = -1;
 int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
   char scheduler[5];
@@ -279,58 +277,49 @@ int main( int argc, char **argv ) {
     network_wait();                                 /* wait for clients */
 
     for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
-      schedulerEnqueue(create_rcb(fd));
-      //printf("%d\n", create_rcb(fd).bytesRemaining);
+      Enqueue(create_rcb(fd));
     }
 
-    //printf("\n");
+    while(count > 0){
+      scheduler_next();
+    }
 
-    while (schedulerDequeue() != 0){}
   }
 }
 
-void schedulerEnqueue(struct RCB rcb){
+void scheduler_next(){
   if(schedulerToUse == -1){
-    printf("Invalid scheduler./n");
+    printf("Scheduler Not Valid.");
   }
-  else if(schedulerToUse == 0){
-    //SJF
+
+  if(schedulerToUse == 0){
+    SJF();
   }
   else if(schedulerToUse == 1){
-    //RR
-    Enqueue(&top, rcb);
+    RR();
   }
-  else if(schedulerToUse == 2){
-    //MLFB
-    
+  else{
+    MLFB();
   }
 }
 
-int schedulerDequeue(){
-  if(schedulerToUse == -1){
-    printf("Invalid scheduler./n");
-  }
-  else if(schedulerToUse == 0){
-    //SJF();
-  }
-  else if(schedulerToUse == 1){
-    if(top.front == NULL){
-      return 0;
-    }
-    
-    struct RCB temp;
-    temp = Dequeue(&top);
+void SJF(){
 
-    serve_client(&temp);
+}
 
-    if(temp.bytesRemaining > 0){
-      printf("We sent a chunk from %s\n", temp.fileName);
-      schedulerEnqueue(temp);
-    }
+void RR(){
+  //Serve the client at the front of the queue
+  serve_client(Front());
+  
+  //If the client still needs more bytes sent, put them back in the queue
+  if(Front().bytesRemaining > 0){
+    Enqueue(Front());
+    Dequeue();
+  } else {
+    Dequeue();
+  }
+}
 
-    return 1;
-  }
-  else if(schedulerToUse == 2){
-    //MLFB();
-  }
+void MLFB(){
+  
 }
