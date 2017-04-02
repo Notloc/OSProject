@@ -17,7 +17,7 @@
 #include "network.h"
 #include "rcbQueue.c"
 
-#define MAX_HTTP_SIZE 65536
+#define MAX_HTTP_SIZE 8192
 
 int nextSequenceNumber = 0;
 
@@ -112,7 +112,7 @@ static struct RCB create_rcb( int fd ) {
       abort();
     }
   }
-  memset( buffer, 0, MAX_HTTP_SIZE );
+  memset( buffer, 0, byteQuantum );
 
   if( !req ) {                                      /* is req valid? */
     len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
@@ -235,8 +235,7 @@ void schedulerEnqueue(struct RCB rcb){
     printf("Invalid scheduler./n");
   }
   else if(schedulerToUse == 0){
-    rcb.byteQuantum = MAX_HTTP_SIZE;
-    Insert(&top, rcb);
+    //SJF
   }
   else if(schedulerToUse == 1){
     //RR
@@ -254,16 +253,6 @@ int schedulerDequeue(){
   }
   else if(schedulerToUse == 0){
     //SJF();
-    if(top.front == NULL){
-      return 0;
-    }
-
-    struct RCB temp;
-    temp = Dequeue(&top);
-
-    serve_client(&temp);
-
-    printf("Served %s.\n", temp.fileName);
   }
   else if(schedulerToUse == 1){
     //RR
@@ -292,7 +281,7 @@ int schedulerDequeue(){
 
       if(tempRCB.bytesRemaining > 0){
         printf("Served %s in top queue.\n", tempRCB.fileName);
-        tempRCB.byteQuantum = (1024*2);
+        tempRCB.byteQuantum = (1024*64);
         Enqueue(&middle, tempRCB);
       }
       return 1;
